@@ -1,0 +1,42 @@
+# Sensitive Data
+*.wif
+*.priv
+*private*.txt
+*wallet*.txt
+recovered_keys/
+test_wallets/
+
+# QR Code Images (may contain sensitive data)
+*.png
+*.jpg
+*.jpeg
+!example*.png
+!demo*.png
+
+# Logs
+*.log
+qr_*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+*.egg-info/
+
+# OS
+.DS_Store
+.directory
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Test data (keep examples)
+data/*
+!data/.gitkeep
+!data/example*

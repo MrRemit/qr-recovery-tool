@@ -1,0 +1,1003 @@
+﻿
+***/
+function saveProject(projectName){
+
+	if(projectName == ""){
+		alert("Please, enter name of your Project!");
+		return;
+	}
+	
+	var saveData = [qr_array, qr_version, qr_format_array];
+	var dataList = JSON.parse(localStorage.getItem("dataList"));
+	var timeNow = new Date();
+	var timeData = timeNow.toDateString();
+	var projectNameList = [];
+	if(dataList == undefined){
+		dataList = [];
+	}
+	for(var i=0; i < dataList.length; i++){
+		projectNameList[i] = dataList[i][0];
+	}
+	if(!projectNameList.includes(projectName)) {
+		dataList.push([projectName, timeData]);
+	} else {
+		var index = projectNameList.indexOf(projectName);
+		dataList[index][1] = timeData;
+	}
+	localStorage.setItem("saveData_"+projectName,JSON.stringify(saveData));
+	localStorage.setItem("dataList",JSON.stringify(dataList));
+	$("#div-save").hide();
+	changed_state = false;
+}
+
+/***
+*
+*	Load project from LocalStorage
+*	
+***/
+function loadProject(name){
+	if(changed_state){
+		if(!confirm("Are you sure want to proceed?\nYour unsaved progress will be lost!"))
+			return;
+	}
+	var loadedData = JSON.parse(localStorage.getItem("saveData_"+name));
+	qr_version = loadedData[1];
+	qr_size = 17+(qr_version*4);
+	generateTable(qr_version);
+	qr_array = loadedData[0];
+	qr_format_array = loadedData[2];
+	brute_force_mode = false;
+	$("#tools-brute-force, #tools-unmasking").removeClass("active");
+	refreshTable();
+	$("#qr-version").val(qr_size+"x"+qr_size+" (ver. "+qr_version+")");
+	$("#div-load").hide();
+	if($("#btn-switch-mode").hasClass("active")){
+		toggleResult();
+	}
+	if($("#div-extract").css("display") != "none"){
+		$("#btn-tools-extract").trigger("click");
+	}
+	if(analysis_mode){
+		$("#tools-data-analysis").trigger("click");
+	}
+	$("#box-tools-masking").hide();
+	$("#qr-overlay").html("");
+	clearHistory();
+	updateHistory("Load project");
+}
+
+/***
+*
+*	Remove project from LocalStorage
+*	
+***/
+function removeProject(name, origin){
+	if(confirm("Are you sure want to permanently delete this project?")){
+		var dataList = JSON.parse(localStorage.getItem("dataList"));
+		var projectNameList = [];
+
+		for(var i=0; i < dataList.length; i++){
+			projectNameList[i] = dataList[i][0];
+		}
+
+		var index = projectNameList.indexOf(name);
+		if(index >= 0){
+			dataList.remove(index);
+			localStorage.removeItem("saveData_"+name);
+			localStorage.setItem("dataList",JSON.stringify(dataList));
+			refreshLoadList(origin);
+		}
+	}
+}
+
+/***
+*
+*	Refresh list of project in LocalStorage
+*	
+***/
+function refreshLoadList(origin){
+	var dataList = JSON.parse(localStorage.getItem("dataList"));
+	if(dataList == undefined){
+		$("#list-"+origin).html("<h5>There's no saved project in Local Storage.</h5>");
+	} else {
+		var element = "";
+		for(var i=0; i < dataList.length; i++){
+			element	+= "<div><h5>"+dataList[i][0]+"</h5><h6>"+dataList[i][1]+"</h6><span>&#10006;<span></div>";
+		}
+		$("#list-"+origin).html(element);
+	}
+}
+
+/***
+*
+*	Decode Base64 to image
+*	
+***/
+function decodeFromBase64(img, callback){
+	qrcode.callback = callback;
+	qrcode.decode(img, callback);
+}
+
+function importFromImage(src, cb){
+	var img = new Image();
+	img.crossOrigin = "Anonymous";
+	console.log(src);
+	img.onload = function(){
+		var canvas_qr = document.createElement("canvas");
+		var context = canvas_qr.getContext('2d');
+		var nheight = img.height;
+    	var nwidth = img.width;
+    	if(img.width*img.height>qrcode.maxImgSize){
+            var ir = img.width / img.height;
+            nheight = Math.sqrt(qrcode.maxImgSize/ir);
+        	nwidth=ir*nheight;
+        }
+
+        canvas_qr.width = nwidth;
+        canvas_qr.height = nheight;
+        context.drawImage(img, 0, 0, canvas_qr.width, canvas_qr.height );
+		qrcode.width = canvas_qr.width;
+    	qrcode.height = canvas_qr.height;
+
+		try{
+        	qrcode.imagedata = context.getImageData(0, 0, canvas_qr.width, canvas_qr.height);
+        }catch(e){
+			cb(e);
+			return;
+		}
+
+		var image = qrcode.grayScaleToBitmap(qrcode.grayscale());
+
+		var detector = new Detector(image);
+		try {
+			var qRCodeMatrix = detector.detect();
+		} catch(error){
+			console.log(error);
+			cb(error);
+			return;
+		}
+
+		var qrArray = qRCodeMatrix.bits.bits;
+		var size = qRCodeMatrix.bits.width;
+		if(size > maxSupportedSize){
+			alert("QR version is unsupported");
+			return;
+		}
+		qr_size = size;
+		qr_version = (size-17)/4;
+		updateToolbox();
+		var result = [];
+
+		for(var x=0; x < size; x++){
+			result[x] = [];
+			for(var y=0; y < size; y++){
+				result[x][y] = qRCodeMatrix.bits.get_Renamed(y,x) ? 1 : 0;
+			}
+		}
+
+		cb(result);
+	}
+	img.src = src;
+}
+
+
+/***
+*
+*	Flood fill algorithm to perform paint-like bucket tool
+*
+*	Reference : https://jsfiddle.net/eWxNE/2/
+*	
+***/
+function floodFill(x, y, oldVal, newVal){
+	
+	x = parseInt(x);
+	y = parseInt(y);
+
+	if(oldVal == null){
+		oldVal = parseInt(qr_array[x][y]);
+	}
+
+	if(qr_array[x][y] !== oldVal){
+    	return;
+    }
+
+    if(is_data_module[x][y])
+    	qr_array[x][y] = parseInt(newVal);
+    else
+    	return;
+
+    if (x > 0){
+        floodFill(x-1, y, oldVal, newVal);
+    }
+    if(y > 0){
+        floodFill(x, y-1, oldVal, newVal);
+    }
+    if(x < qr_size-1){
+        floodFill(x+1, y, oldVal, newVal);
+    }
+    if(y < qr_size-1){
+        floodFill(x, y+1, oldVal, newVal);
+    }
+}
+
+/***
+*
+*	Update history
+*	
+***/
+function updateHistory(msg){
+
+	if(active_history < 10) active_history++;
+
+	history_array = history_array.slice(0, active_history);
+	if(history_array.length == 10){
+		history_array.shift();
+	}
+	history_array.push([msg, JSON.stringify(qr_array)]);
+
+	var html = "";
+	for(var i=history_array.length-1; i >= 0; i--){
+		if(i == history_array.length-1){
+			html += "<div class='active' id='history-"+i+"'><h6>"+history_array[i][0]+"</h6></div>";
+		} else {
+			html += "<div id='history-"+i+"'><h6>"+history_array[i][0]+"</h6></div>";
+		}
+	}
+	$(".history").html(html);
+}
+
+/***
+*
+*	Get history value and refresh QR table
+*	
+***/
+function getHistory(index){
+	qr_array = JSON.parse(history_array[index][1]);
+	if(qr_array.length != qr_size){
+		qr_size = qr_array.length;
+		qr_version = (qr_size-17)/4;
+		updateToolbox();
+	}
+	refreshTable();
+}
+
+/***
+*
+*	Clear all history value
+*	
+***/
+function clearHistory(){
+	history_array = [];
+	active_history = -1;
+	$(".history").html("");
+}
+
+/***
+*
+*	Display information text result in Extract QR Information tool and
+*	load it to #div-extract
+*	
+***/
+function extractInfo(){
+
+	var data_array = JSON.stringify(qr_array);
+	var result = QRDecode(JSON.parse(data_array));
+	var size = 17+(qr_version*4);
+	console.log(result);
+
+	var html = "<h5>QR version : <span>"+qr_version+" ("+size+"x"+size+")</span></h5>\
+			<h5>Error correction level : <span>"+result.ecc+"</span></h5>\
+			<h5>Mask pattern : <span>"+result.mask_pattern+"</span></h5>\
+			<div class=\"space\"></div>\
+			<h5>Number of missing bytes (erasures) : <span>"+result.erasure_count+" bytes ("+(result.erasure_count/result.data_module_count * 100).toFixed(2)+"%)</span></h5>\
+			<div class=\"space\"></div>\
+			<h5>Data blocks : </h5>\
+			<h5><span>"+result.data_blocks+"</span></h5>\
+			<div class=\"space\"></div>";
+	if($("#btn-extract-show-rs").hasClass("active")){
+		for(var i=0; i < result.rs_block.length; i++){
+			html += "<h5>----------------Block "+(i+1)+"----------------</h5>\
+				<h5>Reed-Solomon Block : <span>"+result.rs_block[i]+"</span></h5>";
+			if(result.syndrome[i] != undefined && result.error_count[i] != undefined){
+				console.log(result.syndrome[i], result.error_count);
+				html +="<h5>Syndrome : <span>"+result.syndrome[i]+"</span></h5>\
+					<h5>Number of Errors : <span>"+result.error_count[i]+"</span></h5>\
+					<h5>Coefficient of the error location polynomial : <span>"+result.coeff_error[i]+"</span></h5>\
+					<h5>Error Position : <span>"+result.error_position[i]+"</span></h5>\
+					<h5>Error Magnitude : <span>"+result.error_magnitude[i]+"</span></h5>\
+					<div class='space'></div>";
+			} else {
+				html += "<div class='space'></div>";
+			}
+		}
+	}
+	html += "<h5>Final data bits : </h5>\
+			<h5><span>"+result.data_bits+"</span></h5>\
+			<div class=\"space\"></div>";
+
+	for(var i=0; i < result.data_bits_count; i++){
+		html += "<h5><span>"+result.data_bits_block[i]+"</span></h5>\
+			<h5>Mode Indicator : <span>"+result.mode[i]+"</span></h5>\
+			<h5>Character Count Indicator : <span>"+result.count[i]+"</span></h5>\
+			<h5>Decoded data : <span>"+result.decoded[i]+"</span></h5>\
+			<div class=\"space\"></div>";
+	}
+
+	html += "<h5>Final Decoded string : <span>"+result.message+"</span></h5>";
+	if($("#btn-extract-show-error").hasClass("active") && result.error.length > 0){
+		html += "<div class='space'></div><h5>Error : </h5>";
+		for(var i=0; i < result.error.length; i++){
+			html += "<h5><span> - "+result.error[i]+"</span></h5>";
+		}
+	}
+	$("#div-extract").html(html);
+}
+
+var brute_result = [];
+var brute_result_index = [];
+var current_brute_result = 0;
+
+function callbackBruteForce(){
+	console.log(brute_result);
+	if(brute_result.length != 32)
+		return;
+
+	for(var i=0; i < brute_result.length; i++){
+		if(brute_result[i] != "error decoding QR Code"){
+			brute_result_index.push(i);
+		}
+	}
+
+	var true_count = brute_result_index.length;
+	current_brute_result = 0;
+
+	if(true_count > 0){
+		var ecc = Math.floor(brute_result_index[0] / 8);
+		var mask = brute_result_index[0] % 8;
+
+		qr_format_array = format_information_bits[ecc][mask].split("").reverse();
+
+		if(ecc == 0)
+			ecc = "L";
+		else if(ecc == 1)
+			ecc = "M";
+		else if(ecc == 2)
+			ecc = "Q";
+		else if(ecc == 3)
+			ecc = "H";
+
+		$("#brute-force-msg-wait").hide();
+		$("#brute-force-msg-fail").hide();
+		$("#brute-force-content").show();
+		$("#btn-brute-force-apply-pattern").show();
+		$("#brute-force-decoded-data").val(brute_result[brute_result_index[current_brute_result]]);
+		$("#brute-force-ecc span").text(ecc);
+		$("#brute-force-mask span").text(mask);
+		$("#brute-force-result-counter").text("1 of "+true_count+" result");
+		saveInfoTable(qr_size);
+		generateResult();
+		$("#tools-brute-force").trigger("click");
+	} else {
+		$("#brute-force-msg-wait").hide();
+		$("#brute-force-msg-fail").show();
+		$("#btn-brute-force-apply-pattern").show();
+		qr_format_array = [-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1];
+		saveInfoTable(qr_size);
+		generateResult();
+		updateHistory("Update format info pattern");
+	}
+}
+
+function bruteForceFormatInfo(){
+	brute_result = [];
+	brute_result_index = [];
+
+	var possible_ecc = ["L","M","Q","H"];
+	var possible_mask = [0,1,2,3,4,5,6,7];
+
+	for(var i=0; i < possible_ecc.length; i++){
+		for(var j=0; j < possible_mask.length; j++){
+			qr_format_array = format_information_bits[i][j].split("").reverse();
+			saveInfoTable(qr_size);
+			generateResult();
+			var image = document.getElementById("qr-result-canvas").toDataURL();
+			if(i == 3 && j == 7){
+				decodeFromBase64(image, function(data){
+					brute_result.push(data);
+					callbackBruteForce();
+				})
+			} else {
+				decodeFromBase64(image, function(data){
+					brute_result.push(data);
+				})
+			}
+		}
+	}
+}
+
+/***
+*
+*	Mask qr_array with mask_pattern and refresh QR table
+*	
+***/
+function maskDataBits(){
+	var mask_pattern = getFormatInfo(qr_array).mask;
+	qr_array = maskData(qr_array, mask_pattern);
+	refreshTable();
+	updateHistory("Data masking");
+}
+
+function showMaskPatternArea(){
+	var qr_mask_array = [];
+	for(var i=0; i < qr_array.length; i++){
+		qr_mask_array[i] = [];
+		for(var j=0; j < qr_array[i].length; j++){
+			qr_mask_array[i][j] = 0;
+		}
+	}
+	var mask_pattern = getFormatInfo(qr_array).mask;
+	qr_mask_array = maskData(qr_mask_array, mask_pattern);
+
+	$("#qr-overlay").html("");
+	for(var i=0; i < qr_array.length; i++){
+		var html = "<tr>";
+		for(var j=0; j < qr_array[i].length; j++){
+			if($("#qr-"+i+"-"+j).hasClass("info") || $("#qr-"+i+"-"+j).hasClass("static")){
+				html += "<td class='invisible'></td>";
+			} else {
+				if(qr_mask_array[i][j] == 0)
+					html += "<td class='invisible'></td>";
+				else
+					html += "<td></td>";
+			}
+		}
+		html += "</tr>";
+		$("#qr-overlay").append(html);
+	}
+	resize(qr_pixel_size);
+}
+
+function patchingRecovery(result){
+	var	warning	= 0;
+
+	$("#qr-dummy").html("");
+	$("#div-patch-rec-warning, #div-patch-rec-error").hide();
+	$("#div-patch-rec-data, #btn-patch-rec-apply").show()
+
+	if(typeof result == "string"){
+		$("#div-patch-rec-error").show();
+		$("#div-patch-rec-error textarea").val(result);
+		$("#div-patch-rec-warning, #div-patch-rec-data,	#btn-patch-rec-apply").hide();
+		return;
+	}
+
+	for(var i=0; i < result.result_array.length; i++){
+		var elem = "<tr>";
+		for(var j=0; j < result.result_array[i].length; j++){
+			if(qr_array[i][j] != result.result_array[i][j]){
+				if(result.result_array[i][j] == 0)
+					elem += "<td class='green white'></td>";
+				else if(result.result_array[i][j] == 1)
+					elem += "<td class='green black'></td>";
+				else
+					elem += "<td></td>";
+			} else {
+				if(result.result_array[i][j] == 0)
+					elem += "<td class='white'></td>";
+				else if(result.result_array[i][j] == 1)
+					elem += "<td class='black'></td>";
+				else
+					elem += "<td></td>";
+			}
+		}
+		elem += "</tr>";
+		$("#qr-dummy").append(elem);
+		resize(qr_pixel_size);
+
+	}
+
+	for(var i=0; i < result.after.length; i++){
+		if(result.before.charAt(i) != "?"){
+			if(result.after.charAt(i) != result.before.charAt(i)){
+				warning++;
+			}
+		}
+	}
+
+	if(warning){
+		$("#div-patch-rec-warning").show();
+		$("#div-patch-rec-warning textarea").val("There's are " + warning +" modules conflict with the already known module of original QR code. Correction may fail.")
+	}
+
+	$("#patch-rec-before").val(result.before);
+	$("#patch-rec-after").val(result.after);
+
+	qr_temp_array = Array.prototype.slice.call(result.result_array);
+}
+
+
+/***
+*
+*	Perform Reed-Solomon decode
+*	
+***/
+function reedSolomonDecode(data, nysm){
+
+	var result = [];
+	//console.log('nysm: '+nysm, 'data: '+data);
+
+	for(var i=0; i < data.length; i++){
+		var err_pos = [];
+		for(var j=0; j < data[i].length; j++){
+			if(data[i][j] == 0)
+				err_pos.push(j);
+		}
+		var decoded = RS.decode(data[i], nysm, err_pos);
+
+		if(typeof decoded == "string"){
+			$("#rs-decoder-error").text("ERROR: "+decoded).removeClass("invisible");
+			$("#rs-decoder-output, #rs-decoder-final-msg").val("");
+			return;
+		}
+		
+		result = result.concat(decoded);
+	}
+	
+	$("#rs-decoder-output").val(result.join(","));
+
+	var data_bits = "";
+	for(var i=0; i < result.length; i++){
+		var pad = "00000000";
+		var text = parseInt(result[i]).toString(2);
+    	var remain = (pad+text).length - 8;
+		text = (pad + text).slice(remain);
+    	data_bits += text;
+	}
+	
+	var readed_data = readDataBits(data_bits);
+	if(readed_data != '')
+		$("#rs-decoder-final-msg").val(readed_data);
+	else {
+		$("#rs-decoder-error").text("ERROR: Data can't be readed").removeClass("invisible");
+		$("#rs-decoder-final-msg").val("");
+	}
+
+}
+
+function showQRTableOverlay(){
+	$("#qr-overlay").html("");
+	for(var i=0; i < qr_array.length; i++){
+		var html = "<tr>";
+		for(var j=0; j < qr_array[i].length; j++){
+			if($("#qr-"+i+"-"+j).hasClass("info") || $("#qr-"+i+"-"+j).hasClass("static")){
+				html += "<td class='invisible'></td>";
+			} else {
+				html += "<td id='qr-overlay-"+i+"-"+j+"' style='opacity:0;'></td>";
+			}
+		}
+		html += "</tr>";
+		$("#qr-overlay").append(html);
+	}
+	resize(qr_pixel_size);
+}
+
+function activateAnalysisMode(status){
+
+	status = status || "true";
+
+	if(status === "true"){
+
+		$("#qr-table tr td").css({"pointer-events":"none","border-color":"transparent"});
+		$("#qr-table tr td.static, #qr-table tr td.info").css("opacity","0.2");
+
+		generateDataBlocks();
+
+
+	} else if(status === "false") {
+
+		$("#qr-table tr td").css({"opacity":"1","pointer-events":"auto","border-color":"#434A54"});
+		$("#qr-table tr td.static, #qr-table tr td.info").css("opacity","1");
+
+		$("#qr-overlay").html("");
+
+	}
+}
+
+var module_order = [];
+
+function pushBlock(type,value,decoded){
+
+	var modules = [];
+
+	for(var k=0; k < value.length; k++){
+		modules.push(module_order.shift());
+	}
+
+	var obj = {value:value,type:type,decoded:decoded,modules:modules};
+
+	qr_data_block.push(obj);
+}
+
+function generateDataBlocks(){
+
+	qr_data_block = [];
+
+	var format_info = getFormatInfo(qr_array);
+	var mask_pattern = format_info.mask;
+	var ecc_level = format_info.ecc;
+
+	if(RS_block_num_table[qr_version-1][ecc_level] > 1){
+		alert('Interleaved blocks is not supported yet!');
+		return;
+	}
+
+	var unmasked_data_array = maskData(qr_array, mask_pattern);
+
+	var decoded_data = readDataBlock(qr_array);
+	var data_block = decoded_data.blocks;
+	module_order = decoded_data.module_order;
+
+	while(data_block.length != 1){
+
+		if(data_block.substring(0,4) == "0001"){
+			var enc_mode = "Numeric mode";
+		} else if(data_block.substring(0,4) == "0010"){
+			var enc_mode = "Alphanumeric mode";
+		} else if(data_block.substring(0,4) == "0100"){
+			var enc_mode = "Binary mode";
+		} else if(data_block.substring(0,4) == "0000") {
+			var enc_mode = "Terminator";
+		} else {
+			break;
+		}
+				
+		pushBlock(
+			"Mode indicator",
+			data_block.substring(0,4),
+			enc_mode
+		);
+		data_block = data_block.substring(4);
+
+		if(enc_mode == "Numeric mode"){
+
+			var data_length = parseInt(data_block.substring(0,10), 2);
+			pushBlock(
+				"Char. count indicator",
+				data_block.substring(0,10),
+				data_length
+			);
+			data_block = data_block.substring(10);
+						
+			for(var k=0; k < Math.floor((data_length + 2) / 3); k++){
+
+				var temp_value = "";
+				var temp_decoded = "";
+
+				if(k == Math.floor((data_length + 2) / 3) - 1){
+					if(data_length % 3 == 0){
+						temp_value = data_block.substring(0,10);
+    					temp_decoded = parseInt(data_block.substring(0,10), 2).toString().padStart(3, "0");
+            			data_block = data_block.substring(10);
+    				} else if(data_length % 3 == 1){
+    					temp_value = data_block.substring(0,4);
+	    				temp_decoded = parseInt(data_block.substring(0,4), 2).toString();
+    	    			data_block = data_block.substring(4);
+    				} else {
+    					temp_value = data_block.substring(0,7);
+    					temp_decoded = parseInt(data_block.substring(0,7), 2).toString().padStart(2, "0");
+        				data_block = data_block.substring(7);
+    				}
+				} else {
+					temp_value = data_block.substring(0,10);
+					temp_decoded = parseInt(data_block.substring(0,10), 2).toString().padStart(3, "0");
+					data_block = data_block.substring(10);
+				}
+
+				pushBlock(
+					"Message data",
+					temp_value,
+					temp_decoded
+				);
+			}
+
+		} else if(enc_mode == "Alphanumeric mode"){
+
+			var data_length = parseInt(data_block.substring(0,9), 2);
+			pushBlock(
+				"Char. count indicator",
+				data_block.substring(0,9),
+				data_length
+			);
+			data_block = data_block.substring(9);
+
+			for(var i=0; i < Math.floor((data_length + 1) / 2); i++){
+				
+    			if(i == Math.floor((data_length + 1) / 2) - 1){
+    				if(data_length % 2 == 0){
+    					var num = parseInt(data_block.substring(0,11), 2);
+    					temp_value = data_block.substring(0,11);
+    					temp_decoded = alphanumeric_table[Math.floor(num / 45)] + alphanumeric_table[num % 45];
+    					data_block = data_block.substring(11);
+    				} else {
+    					var num = parseInt(data_block.substring(0,6), 2);
+    					temp_value = data_block.substring(0,6);
+    					temp_decoded = alphanumeric_table[num];
+    					data_block = data_block.substring(6);
+    				}
+    			} else {
+    				var num = parseInt(data_block.substring(0,11), 2);
+    				temp_value = data_block.substring(0,11);
+    				temp_decoded = alphanumeric_table[Math.floor(num / 45)] + alphanumeric_table[num % 45]
+    				data_block = data_block.substring(11);
+    			}
+
+    			pushBlock(
+					"Message data",
+					temp_value,
+					temp_decoded
+				);
+    		}
+
+		} else if(enc_mode == "Binary mode"){
+
+			var data_length = parseInt(data_block.substring(0,8), 2);
+			pushBlock(
+				"Char. count indicator",
+				data_block.substring(0,8),
+				data_length
+			);
+			data_block = data_block.substring(8);
+
+			for(var i=0; i < data_length; i++){
+				temp_value = data_block.substring(0,8);
+    			temp_decoded = String.fromCharCode(parseInt(data_block.substring(0,8), 2));
+    			data_block = data_block.substring(8);
+
+    			pushBlock(
+					"Message data",
+					temp_value,
+					temp_decoded
+				);
+    		}
+
+    	} else if(enc_mode == "Terminator"){
+
+
+		} else {
+			break;
+		}
+	}
+
+	//console.log(data_block);
+
+	
+	var error_correction_level = getFormatInfo(qr_array).ecc;
+	var offset = data_block.length - error_correction_code_table[qr_version - 1][error_correction_level]*8;
+		
+	pushBlock(
+		"Padding bits",
+		data_block.substring(0,offset),
+		""
+	);
+	data_block = data_block.substring(offset);
+
+	while(data_block.length >= 8){
+		pushBlock(
+			"Error correction",
+			data_block.substring(0,8),
+			parseInt(data_block.substring(0,8), 2)
+		);
+		data_block = data_block.substring(8);
+	}
+
+	console.log(qr_data_block);
+
+	showQRTableOverlay();
+
+	//Generate QR Overlay
+	for(var i=0; i < qr_data_block.length; i++){
+		for(var j=0; j < qr_data_block[i].modules.length; j++){
+			var module = qr_data_block[i].modules[j];
+			$("#qr-overlay-"+module).addClass("hoverable data-block-"+i);
+		}
+		for(var j=0; j < qr_data_block[i].modules.length; j++){
+			var module = qr_data_block[i].modules[j].split('-');
+			generateSeparator(module[0], module[1], "data-block-"+i);
+		}
+	}
+
+}
+
+//Generate separator border between blocks
+function generateSeparator(i,j,cls){
+
+	i = parseInt(i);
+	j = parseInt(j);
+
+	var up = $("#qr-overlay-"+(i-1)+"-"+j);
+	var down = $("#qr-overlay-"+(i+1)+"-"+j);
+	var left = $("#qr-overlay-"+i+"-"+(j-1));
+	var right = $("#qr-overlay-"+i+"-"+(j+1));
+
+
+	if(!left.hasClass(cls)){
+		$("#qr-"+i+"-"+j).css("border-left","solid 1px #f44336");
+	}
+	if(!right.hasClass(cls)){
+		$("#qr-"+i+"-"+j).css("border-right","solid 1px #f44336");
+	}
+	if(!up.hasClass(cls)){
+		$("#qr-"+i+"-"+j).css("border-top","solid 1px #f44336");
+	}
+	if(!down.hasClass(cls)){
+		$("#qr-"+i+"-"+j).css("border-bottom","solid 1px #f44336");
+	}
+}
+
+function selectBlock(cls){
+
+	var index = cls.substring(11);
+
+	$("#data-analysis-value").val(qr_data_block[index].value);
+	$("#data-analysis-type").val(qr_data_block[index].type);
+	$("#data-analysis-decoded").val(qr_data_block[index].decoded);
+}
+
+function updateBlock(value, cls){
+
+	var index = cls[cls.length-2].substring(11);
+
+	if(value == qr_data_block[index].value){
+		//return;
+	}
+
+	if(value.length != qr_data_block[index].value.length || !/^[01\?]+$/g.test(value)){
+		alert('Invalid value!');
+		$("#data-analysis-value").val(qr_data_block[index].value).focus();
+		return;
+	}
+
+	qr_data_block[index].value = value;
+	var mask_pattern = getFormatInfo(qr_array).mask;
+
+	for(var i=0; i < qr_data_block[index].modules.length; i++){
+		var cord = qr_data_block[index].modules[i].split('-');
+		var new_val = value.substring(i,i+1);
+		console.log(new_val, qr_array[cord[0]][cord[1]]);
+
+		if(new_val == '?')
+			new_val = -1;
+		else
+			new_val = parseInt(new_val);
+
+		if(mask(mask_pattern, parseInt(cord[0]), parseInt(cord[1]))){
+			if(new_val == 1)
+				new_val = 0;
+			else if(new_val == 0)
+				new_val = 1;
+		}
+
+		qr_array[cord[0]][cord[1]] = new_val;
+	}
+
+	refreshTable();
+	activateAnalysisMode();
+	updateHistory("Modules edited");
+
+	$("#data-analysis-value").val("");
+	$("#data-analysis-type").val("");
+	$("#data-analysis-decoded").val("");
+
+}
+
+
+/*******************************************************************
+*
+*					EVENT LISTENER USING JQUERY
+*	
+********************************************************************/
+$(document).ready(function(){
+
+
+
+	$("#home-new").click(function(){
+		$("#home-box").hide();
+		$("#div-new").show();
+	})
+
+	$("#home-load").click(function(){
+		$("#home-box").hide();
+		$("#div-load").show();
+		var dataList = JSON.parse(localStorage.getItem("dataList"));
+		if(dataList == undefined){
+			$("#list-load").html("<h5>There's no saved project in Local Storage.</h5>");
+		} else {
+			var element = "";
+			for(var i=0; i < dataList.length; i++){
+				element	+= "<div><h5>"+dataList[i][0]+"</h5><h6>"+dataList[i][1]+"</h6><span>&#10006;<span></div>";
+			}
+			$("#list-load").html(element);
+		}
+	})
+
+	$("#new-btn-new").click(function(){
+		generateTable(qr_version);
+		qr_format_array = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+		if($("#btn-switch-mode").hasClass("active")){
+			toggleResult();
+		}
+		if($("#div-extract").css("display") != "none"){
+			$("#btn-tools-extract").trigger("click");
+		}
+		brute_force_mode = false;
+		extract_info_mode = false;
+		if(analysis_mode){
+			$("#tools-data-analysis").trigger("click");
+		}
+		$("#tools-brute-force, #tools-unmasking").removeClass("active");
+		$("#qr-overlay").html("");
+		$("#box-tools-masking").hide();
+		$("#div-new").hide();
+	})
+
+	$("#new-btn-import-img").click(function(){
+		$("#import-img").click();
+		return false;
+	})
+
+	$("#import-img").change(function(){
+		if(this.files && this.files[0]){
+			var reader = new FileReader();
+
+			reader.onload = function(e){
+				$("#hidden-img").attr("src",e.target.result);
+				importFromImage($("#hidden-img").attr("src"), function(data){
+					if(Array.isArray(data)){
+						$("#div-new").hide();
+						generateTable(qr_version);
+						updateQRArray(data);
+						clearHistory();
+						updateHistory("Load from image");
+						refreshTable();
+						changed_state = true;
+					} else {
+						alert(data);
+					}
+				})
+			}
+			reader.readAsDataURL(this.files[0]);
+		}
+	})
+
+	$("#new-btn-import-txt").click(function(){
+		$("#import-txt").click();
+		return false;
+	})
+
+	$("#import-txt").change(function(){
+		if(this.files && this.files[0]){
+			var	reader = new FileReader();
+
+			reader.onload = function (e) {
+		        const file = e.target.result;
+  
+				const lines = file.split(/\r\n|\n/);
+				$("#hidden-txt").val(lines.join('\n'));
+				$("#div-new").hide();
+				qr_size = lines[0].length;
+				qr_version = (qr_size-17)/4;
+				generateTable( qr_version );
+				data = loadTxt2Array(lines);
+				updateQRArray(data);
+				clearHistory();
+				updateHistory("Load	from image");
+				refreshTable();
+				changed_state =	true;
+
+			};
+			reader.readAsText(this.files[0]);
+		}
+	})
+
+	$("#menu-new").click(function(){
+		if(changed_state){
